@@ -1,0 +1,16 @@
+name: Strategy Update
+
+on:
+  push:
+    branches: ['strategy/**']
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log strategy update
+        run: |
+          echo "Strategy branch updated: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
+          cat strategy.json || echo "No strategy.json"
