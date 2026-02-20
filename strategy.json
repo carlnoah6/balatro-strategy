@@ -1,0 +1,12 @@
+{
+  "name": "v70ba0bfc-gemini-3-flash",
+  "code_hash": "70ba0bfc",
+  "model": "google/gemini-3-flash",
+  "description": "Rule-based pairs build with LLM shop advisor. Brute-force C(8,k) hand enumeration, 15+ joker effects, game-state hand levels.",
+  "llm_prompt_file": "llm_advisor.py",
+  "params": {
+    "LLM_MODEL": "google/gemini-3-flash",
+    "max_tokens": 1024,
+    "llm_threshold": "hand_rank<=1 AND score<30%"
+  }
+}
