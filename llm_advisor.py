@@ -18,7 +18,7 @@ from .strategy import GameContext, Archetype, ArchetypeTracker
 
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:8180/v1")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "sk-luna-2026-openclaw")
-LLM_MODEL = os.environ.get("LLM_MODEL", "kimi-k2.5")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-3-flash")
 
 # Track LLM call stats
 _llm_stats = {"calls": 0, "failures": 0, "total_ms": 0, "input_tokens": 0, "output_tokens": 0}
@@ -211,6 +211,22 @@ def call_llm(prompt: str, timeout: float = 30.0) -> Optional[dict]:
         elapsed_ms = (time.time() - start) * 1000
         _llm_stats["total_ms"] += elapsed_ms
         print(f"[llm_advisor] Error ({elapsed_ms:.0f}ms): {e}")
+        return None
+
+
+def _call_llm_raw(prompt: str, max_tokens: int = 512, timeout: float = 30.0) -> Optional[str]:
+    """Call LLM and return raw text response (no JSON parsing)."""
+    try:
+        r = requests.post(
+            f"{LLM_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
+            json={"model": LLM_MODEL, "messages": [{"role": "user", "content": prompt}],
+                  "temperature": 0.3, "max_tokens": max_tokens},
+            timeout=timeout,
+        )
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"[llm_advisor] _call_llm_raw error: {e}")
         return None
 
 
