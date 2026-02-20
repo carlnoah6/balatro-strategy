@@ -214,6 +214,22 @@ def call_llm(prompt: str, timeout: float = 30.0) -> Optional[dict]:
         return None
 
 
+def _call_llm_raw(prompt: str, max_tokens: int = 512, timeout: float = 30.0) -> Optional[str]:
+    """Call LLM and return raw text response (no JSON parsing)."""
+    try:
+        r = requests.post(
+            f"{LLM_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
+            json={"model": LLM_MODEL, "messages": [{"role": "user", "content": prompt}],
+                  "temperature": 0.3, "max_tokens": max_tokens},
+            timeout=timeout,
+        )
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"[llm_advisor] _call_llm_raw error: {e}")
+        return None
+
+
 def _parse_json_response(content: str) -> Optional[dict]:
     """Extract JSON from LLM response text."""
     # Try direct parse
