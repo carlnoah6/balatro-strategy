@@ -17,7 +17,8 @@ from .scoring import (
 from .strategy import (
     Archetype, ArchetypeTracker, GameContext,
     should_discard, choose_play, shop_decisions, evaluate_shop_item,
-    build_context,
+    build_context, get_boss_counter, should_reroll,
+    JokerTier, JOKER_TIERS, TIER_SCORE_BONUS,
 )
 from .llm_advisor import (
     advise_discard, advise_shop, advise_boss,
@@ -149,20 +150,43 @@ class DecisionEngine:
     def decide_shop(self, state: dict) -> Decision:
         """Decide what to buy in the shop.
 
-        Returns Decision with action="buy" (params.index) or action="skip".
+        Uses tier-aware scoring, economy management, and archetype synergy.
+        LLM is consulted for nuanced decisions.
+
+        Returns Decision with action="buy", "reroll", or "skip".
         """
         ctx = self._build_context(state)
 
         if not ctx.shop_items:
+            # Check if we should reroll
+            do_reroll, reroll_reason = should_reroll(ctx)
+            if do_reroll:
+                return Decision("reroll", {}, reroll_reason, "rule")
             return Decision("skip", {}, "No items in shop", "rule")
 
-        # Rule-based scoring
+        # Rule-based scoring (now with tier awareness + economy)
         item_scores = shop_decisions(ctx)
 
-        # Filter to affordable items with positive scores
-        buyable = [(idx, score, reason) for idx, score, reason in item_scores
-                    if score >= 5.0 and idx < len(ctx.shop_items)
-                    and ctx.shop_items[idx].get("cost", 0) <= ctx.dollars]
+        # Lower threshold for high-tier items (S+/S get bought at 4.0+)
+        buyable = []
+        for idx, score, reason in item_scores:
+            if idx >= len(ctx.shop_items):
+                continue
+            item = ctx.shop_items[idx]
+            cost = item.get("cost", 0)
+            if cost > ctx.dollars:
+                continue
+            name = item.get("name", "")
+            tier = JOKER_TIERS.get(name)
+            # S+ tier: buy at any positive score
+            if tier == JokerTier.S_PLUS and score >= 3.0:
+                buyable.append((idx, score, reason))
+            # S tier: lower threshold
+            elif tier == JokerTier.S and score >= 4.0:
+                buyable.append((idx, score, reason))
+            # Normal threshold
+            elif score >= 5.0:
+                buyable.append((idx, score, reason))
 
         # LLM for shop decisions (always complex)
         if USE_LLM and ctx.shop_items:
@@ -192,6 +216,11 @@ class DecisionEngine:
             return Decision("buy", {"index": best_idx},
                             f"Buy {name} (score {best_score:.1f}: {best_reason})", "rule")
 
+        # Nothing to buy — consider reroll
+        do_reroll, reroll_reason = should_reroll(ctx)
+        if do_reroll:
+            return Decision("reroll", {}, reroll_reason, "rule")
+
         return Decision("skip", {}, "Nothing worth buying", "rule")
 
     # ============================================================
@@ -201,17 +230,34 @@ class DecisionEngine:
     def decide_blind(self, state: dict) -> Decision:
         """Decide on blind selection (mainly boss blind strategy).
 
+        Uses knowledge-base counter-strategies for boss blinds,
+        with LLM fallback for complex situations.
+
         Returns Decision with action="select_blind".
         """
         ctx = self._build_context(state)
         blind_info = ctx.blind_info
         boss_name = blind_info.get("boss_name", "")
 
-        if boss_name and USE_LLM:
-            llm_result = advise_boss(ctx, boss_name)
-            if llm_result:
-                reasoning = llm_result.get("reasoning", "")
-                return Decision("select_blind", {"boss": boss_name}, reasoning, "llm")
+        if boss_name:
+            # Get rule-based counter-strategy from knowledge base
+            counter = get_boss_counter(boss_name, ctx)
+            reasoning = (
+                f"Boss: {boss_name} — {counter['effect']}. "
+                f"Counter: {counter['counter']} "
+                f"(danger {counter['danger_level']}/3"
+                f"{', have counter joker' if counter.get('have_counter') else ''})"
+            )
+
+            # Only escalate to LLM for high-danger situations
+            if USE_LLM and counter["danger_level"] >= 2:
+                llm_result = advise_boss(ctx, boss_name)
+                if llm_result:
+                    llm_reasoning = llm_result.get("reasoning", "")
+                    return Decision("select_blind", {"boss": boss_name},
+                                    f"{reasoning} | LLM: {llm_reasoning}", "llm")
+
+            return Decision("select_blind", {"boss": boss_name}, reasoning, "rule")
 
         return Decision("select_blind", {"boss": boss_name},
                         f"Entering blind (boss: {boss_name or 'none'})", "rule")

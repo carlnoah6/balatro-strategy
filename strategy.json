@@ -1,12 +1,24 @@
 {
-  "name": "v70ba0bfc-gemini-3-flash",
-  "code_hash": "70ba0bfc",
+  "name": "v2-kb-enhanced-gemini-3-flash",
+  "code_hash": "v2-kb",
   "model": "google/gemini-3-flash",
-  "description": "Rule-based pairs build with LLM shop advisor. Brute-force C(8,k) hand enumeration, 15+ joker effects, game-state hand levels.",
+  "description": "Knowledge-base enhanced strategy. Joker tier awareness (S+/S/A/B/C), economy management ($25 interest protection), boss blind counter-strategies, planet card prioritization by archetype, improved discard logic (enhancement/edition retention, archetype-aware card scoring), universal win formula guidance. Rule-based play/discard, LLM for shop decisions.",
   "llm_prompt_file": "llm_advisor.py",
   "params": {
     "LLM_MODEL": "google/gemini-3-flash",
     "max_tokens": 1024,
-    "llm_threshold": "hand_rank<=1 AND score<30%"
+    "llm_threshold": "hand_rank<=1 AND score<30%",
+    "improvements": [
+      "joker_tier_awareness",
+      "economy_management",
+      "boss_blind_counters",
+      "planet_prioritization",
+      "enhanced_discard_logic",
+      "scaling_joker_timing",
+      "xmult_urgency_tracking",
+      "reroll_strategy",
+      "voucher_prioritization",
+      "universal_win_formula"
+    ]
   }
 }

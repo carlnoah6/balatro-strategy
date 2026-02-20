@@ -1,10 +1,21 @@
-"""Balatro scoring engine — accurate chip×mult×xMult calculation.
+"""Balatro scoring engine — accurate sequential chip/mult calculation.
 
-Implements the real Balatro scoring formula:
-  final_score = (base_chips + card_chips) × (base_mult + add_mult) × product(xMult_sources)
+Implements the real Balatro scoring pipeline (matching EFHIII calculator):
+  1. Start with hand-type base chips & base mult (from hand level)
+  2. For each scoring card (left to right):
+     - Add card's chip value (rank chips + enhancement chips)
+     - Apply card enhancement mult effects (+mult or xMult)
+     - Apply card edition effects (foil +50 chips, holo +10 mult, poly x1.5)
+     - For each joker (left to right): apply per-card-scored triggers
+     - If Red Seal: retrigger the card
+  3. For each held-in-hand card: apply Steel Card xMult, joker held-card effects
+  4. For each joker (left to right):
+     - Apply joker's independent scoring effect
+     - Apply joker edition (foil/holo/poly)
+  5. final_score = chips × mult
 
-Card chips come from played cards. Jokers, enhancements, seals, and editions
-modify chips, mult, or xMult at various stages.
+Key difference from v1: mult is accumulated SEQUENTIALLY, not separated into
+add_mult/x_mult pools. This means joker ORDER matters — matching real Balatro.
 """
 
 from __future__ import annotations
@@ -23,6 +34,13 @@ RANK_VALUES = {
     "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8,
     "9": 9, "10": 10, "Jack": 10, "Queen": 10, "King": 10, "Ace": 11,
 }
+
+RANK_NUM = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8,
+    "9": 9, "10": 10, "Jack": 11, "Queen": 12, "King": 13, "Ace": 14,
+}
+
+FACE_RANKS = {"Jack", "Queen", "King"}
 
 # Balatro base scoring for each hand type: (base_chips, base_mult, rank)
 HAND_BASE = {
@@ -56,26 +74,21 @@ PLANET_BONUS = {
     "High Card":        (10, 1),
 }
 
-# Enhancement effects
-ENHANCEMENT_CHIPS = {
-    "Bonus Card": 30,
-    "Stone Card": 50,
+# Hand types that "contain" sub-types (for joker triggers like Jolly Joker)
+HAND_CONTAINS = {
+    "Flush Five":      {"Flush Five", "Five of a Kind", "Four of a Kind", "Three of a Kind", "Pair", "Flush"},
+    "Flush House":     {"Flush House", "Full House", "Three of a Kind", "Pair", "Flush"},
+    "Five of a Kind":  {"Five of a Kind", "Four of a Kind", "Three of a Kind", "Pair"},
+    "Straight Flush":  {"Straight Flush", "Straight", "Flush"},
+    "Four of a Kind":  {"Four of a Kind", "Three of a Kind", "Pair"},
+    "Full House":      {"Full House", "Three of a Kind", "Two Pair", "Pair"},
+    "Flush":           {"Flush"},
+    "Straight":        {"Straight"},
+    "Three of a Kind": {"Three of a Kind", "Pair"},
+    "Two Pair":        {"Two Pair", "Pair"},
+    "Pair":            {"Pair"},
+    "High Card":       {"High Card"},
 }
-ENHANCEMENT_MULT = {
-    "Mult Card": 4,
-}
-ENHANCEMENT_XMULT = {
-    "Glass Card": 2.0,
-}
-ENHANCEMENT_GOLD_PAYOUT = 3  # Gold Card: +$3 at end of round
-
-# Edition effects
-EDITION_CHIPS = {"Foil": 50}
-EDITION_MULT = {"Holographic": 10}
-EDITION_XMULT = {"Polychrome": 1.5}
-
-# Seal effects (simplified)
-SEAL_RETRIGGER = {"Red Seal"}  # retrigger card scoring
 
 
 # ============================================================
@@ -85,8 +98,8 @@ SEAL_RETRIGGER = {"Red Seal"}  # retrigger card scoring
 @dataclass
 class Card:
     """A playing card with all Balatro modifiers."""
-    rank: str  # "2"-"10", "Jack", "Queen", "King", "Ace"
-    suit: str  # "Hearts", "Diamonds", "Clubs", "Spades"
+    rank: str       # "2"-"10", "Jack", "Queen", "King", "Ace"
+    suit: str       # "Hearts", "Diamonds", "Clubs", "Spades"
     enhancement: str = ""
     edition: str = ""
     seal: str = ""
@@ -98,8 +111,11 @@ class Card:
 
     @property
     def rank_num(self) -> int:
-        return {"2":2,"3":3,"4":4,"5":5,"6":6,"7":7,"8":8,
-                "9":9,"10":10,"Jack":11,"Queen":12,"King":13,"Ace":14}.get(self.rank, 0)
+        return RANK_NUM.get(self.rank, 0)
+
+    @property
+    def is_face(self) -> bool:
+        return self.rank in FACE_RANKS
 
     @classmethod
     def from_state(cls, data: dict, index: int = 0) -> "Card":
@@ -123,6 +139,7 @@ class Joker:
     id: str = ""
     edition: str = ""
     rarity: str = ""
+    sell_value: int = 0  # for Swashbuckler etc.
 
     @classmethod
     def from_state(cls, data: dict) -> "Joker":
@@ -131,6 +148,7 @@ class Joker:
             id=data.get("id", ""),
             edition=data.get("edition", ""),
             rarity=data.get("rarity", ""),
+            sell_value=data.get("sell_value", 0),
         )
 
 
@@ -138,12 +156,10 @@ class Joker:
 class HandLevel:
     """Tracks planet card upgrades for each hand type."""
     levels: dict[str, int] = field(default_factory=lambda: {k: 1 for k in HAND_BASE})
-    # Override chips/mult from game state (more accurate than calculating from levels)
     _game_base: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     def get_base(self, hand_type: str) -> tuple[int, int]:
         """Return (chips, mult) for a hand type at its current level."""
-        # Prefer game-reported values (includes all planet upgrades accurately)
         if hand_type in self._game_base:
             return self._game_base[hand_type]
         base_chips, base_mult, _ = HAND_BASE.get(hand_type, (5, 1, 1))
@@ -155,11 +171,6 @@ class HandLevel:
 
     @classmethod
     def from_game_state(cls, hand_levels_data: dict) -> "HandLevel":
-        """Build from Lua game state hand_levels dict.
-        
-        Each entry: {level, chips, mult, played}
-        Uses the game's actual chips/mult values directly.
-        """
         hl = cls()
         for name, data in hand_levels_data.items():
             if isinstance(data, dict):
@@ -179,12 +190,12 @@ class ScoreBreakdown:
     base_chips: int
     base_mult: int
     card_chips: int
-    add_chips: int  # from jokers, enhancements
-    add_mult: int   # from jokers, enhancements
-    x_mult: float   # product of all xMult sources
+    add_chips: int      # total added chips (from jokers, editions, enhancements)
+    add_mult: int       # total added mult (for backward compat reporting)
+    x_mult: float       # product of all xMult sources (for backward compat reporting)
     final_score: float
-    scoring_cards: list[int]  # indices of cards that scored
-    all_cards: list[int]      # indices of all played cards
+    scoring_cards: list[int]
+    all_cards: list[int]
 
     @property
     def total_chips(self) -> int:
@@ -199,11 +210,23 @@ class ScoreBreakdown:
 # Hand Classification
 # ============================================================
 
+def _check_straight(ranks: list[int]) -> bool:
+    """Check if ranks form a straight (including A-2-3-4-5 and 10-J-Q-K-A)."""
+    s = sorted(set(ranks))
+    if len(s) < 5:
+        return False
+    if s[-1] - s[0] == 4 and len(s) == 5:
+        return True
+    # Ace-low straight
+    if set(s) == {14, 2, 3, 4, 5}:
+        return True
+    return False
+
+
 def classify_hand(cards: list[Card]) -> tuple[str, list[int]]:
     """Classify a set of cards into a poker hand type.
 
     Returns (hand_type, scoring_card_indices).
-    scoring_card_indices are the cards that actually contribute to scoring.
     """
     if not cards:
         return ("High Card", [])
@@ -216,7 +239,7 @@ def classify_hand(cards: list[Card]) -> tuple[str, list[int]]:
     is_flush = len(set(suits)) == 1 and n >= 5
     is_straight = _check_straight(ranks) if n >= 5 else False
 
-    # Five of a Kind (requires special joker like Smeared Joker)
+    # Five of a Kind
     if rc[0][1] >= 5:
         idxs = [i for i, c in enumerate(cards) if c.rank_num == rc[0][0]][:5]
         if is_flush:
@@ -263,28 +286,292 @@ def classify_hand(cards: list[Card]) -> tuple[str, list[int]]:
         idxs = [i for i, c in enumerate(cards) if c.rank_num == pair_rank][:2]
         return ("Pair", idxs)
 
-    # High Card — only the highest card scores
     best_idx = max(range(n), key=lambda i: cards[i].rank_num)
     return ("High Card", [best_idx])
 
 
-def _check_straight(ranks: list[int]) -> bool:
-    """Check if ranks form a straight (including A-2-3-4-5)."""
-    s = sorted(set(ranks))
-    if len(s) < 5:
-        return False
-    # Normal straight
-    if s[-1] - s[0] == 4 and len(s) == 5:
-        return True
-    # Ace-low straight (A-2-3-4-5)
-    if set(s) == {14, 2, 3, 4, 5}:
-        return True
-    return False
+# ============================================================
+# Sequential Score Calculation (matches real Balatro pipeline)
+# ============================================================
+
+class _ScoringContext:
+    """Mutable scoring state passed through the pipeline."""
+    __slots__ = ('chips', 'mult', 'hand_type', 'hand_contains',
+                 'played_cards', 'scoring_idxs', 'held_cards', 'jokers',
+                 '_report_add_chips', '_report_add_mult', '_report_x_mult')
+
+    def __init__(self, base_chips: int, base_mult: int, hand_type: str,
+                 played_cards: list[Card], scoring_idxs: list[int],
+                 held_cards: list[Card] | None, jokers: list[Joker]):
+        self.chips = base_chips
+        self.mult = float(base_mult)
+        self.hand_type = hand_type
+        self.hand_contains = HAND_CONTAINS.get(hand_type, {hand_type})
+        self.played_cards = played_cards
+        self.scoring_idxs = scoring_idxs
+        self.held_cards = held_cards or []
+        self.jokers = jokers
+        # For backward-compat reporting
+        self._report_add_chips = 0
+        self._report_add_mult = 0
+        self._report_x_mult = 1.0
+
+    def add_chips(self, n: int | float):
+        self.chips += n
+        self._report_add_chips += n
+
+    def add_mult(self, n: int | float):
+        self.mult += n
+        self._report_add_mult += n
+
+    def x_mult(self, n: float):
+        self.mult *= n
+        self._report_x_mult *= n
 
 
-# ============================================================
-# Score Calculation
-# ============================================================
+def _trigger_card_scored(ctx: _ScoringContext, card: Card):
+    """Process a single scoring card trigger (chips + enhancement + edition + per-card jokers)."""
+    # --- Card chip value ---
+    if card.enhancement == "Stone Card":
+        ctx.add_chips(50)
+    else:
+        ctx.add_chips(card.chip_value)
+        # Bonus Card enhancement
+        if card.enhancement == "Bonus Card":
+            ctx.add_chips(30)
+
+    # --- Card enhancement mult/xMult ---
+    if card.enhancement == "Mult Card":
+        ctx.add_mult(4)
+    elif card.enhancement == "Glass Card":
+        ctx.x_mult(2.0)
+    elif card.enhancement == "Lucky Card":
+        # Best-case: 1 in 5 chance for +20 mult, 1 in 15 for +$. Use expected value.
+        ctx.add_mult(4)  # E[mult] ≈ 20 * (1/5) = 4
+
+    # --- Card edition ---
+    if card.edition == "Foil":
+        ctx.add_chips(50)
+    elif card.edition == "Holographic":
+        ctx.add_mult(10)
+    elif card.edition == "Polychrome":
+        ctx.x_mult(1.5)
+
+    # --- Per-card joker triggers (left to right) ---
+    for j in ctx.jokers:
+        _joker_on_card_scored(ctx, j, card)
+
+
+def _joker_on_card_scored(ctx: _ScoringContext, joker: Joker, card: Card):
+    """Joker effects that trigger per scoring card (suit/rank bonuses)."""
+    name = joker.name
+
+    # Suit-based mult jokers
+    if name == "Greedy Joker" and card.suit == "Diamonds":
+        ctx.add_mult(3)
+    elif name == "Lusty Joker" and card.suit == "Hearts":
+        ctx.add_mult(3)
+    elif name == "Wrathful Joker" and card.suit == "Spades":
+        ctx.add_mult(3)
+    elif name == "Gluttonous Joker" and card.suit == "Clubs":
+        ctx.add_mult(3)
+
+    # Suit-based chip jokers
+    elif name == "Arrowhead" and card.suit == "Spades":
+        ctx.add_chips(50)
+
+    # Suit-based mult (uncommon)
+    elif name == "Onyx Agate" and card.suit == "Clubs":
+        ctx.add_mult(7)
+
+    # Bloodstone: Hearts → 1 in 2 chance x1.5 mult (use expected value)
+    elif name == "Bloodstone" and card.suit == "Hearts":
+        ctx.x_mult(1.25)  # E[x] = 0.5*1.5 + 0.5*1.0 = 1.25
+
+    # Rough Gem: Diamonds → +$1 (economy, no scoring effect)
+
+    # Face card jokers
+    elif name == "Scary Face" and card.is_face:
+        ctx.add_chips(30)
+    elif name == "Smiley Face" and card.is_face:
+        ctx.add_mult(5)
+
+    # Rank-based jokers
+    elif name == "Fibonacci" and card.rank in ("Ace", "2", "3", "5", "8"):
+        ctx.add_mult(8)
+    elif name == "Even Steven" and card.rank in ("2", "4", "6", "8", "10"):
+        ctx.add_mult(4)
+    elif name == "Odd Todd" and card.rank in ("3", "5", "7", "9", "Ace"):
+        ctx.add_chips(31)
+    elif name == "Scholar" and card.rank == "Ace":
+        ctx.add_chips(20)
+        ctx.add_mult(4)
+    elif name == "Walkie Talkie" and card.rank in ("10", "4"):
+        ctx.add_chips(10)
+        ctx.add_mult(4)
+
+    # Triboulet: King or Queen → x2 mult
+    elif name == "Triboulet" and card.rank in ("King", "Queen"):
+        ctx.x_mult(2.0)
+
+    # Photograph: first face card → x2 mult (simplified: triggers on every face)
+    elif name == "Photograph" and card.is_face:
+        ctx.x_mult(2.0)
+
+
+def _trigger_held_card(ctx: _ScoringContext, card: Card):
+    """Process a held-in-hand card (Steel Card, joker held-card effects)."""
+    if card.enhancement == "Steel Card":
+        ctx.x_mult(1.5)
+
+    # Card edition on held cards (only Steel cards trigger)
+    if card.enhancement == "Steel Card":
+        if card.edition == "Polychrome":
+            ctx.x_mult(1.5)
+        elif card.edition == "Holographic":
+            ctx.add_mult(10)
+        elif card.edition == "Foil":
+            ctx.add_chips(50)
+
+    # Red Seal on held Steel card → retrigger
+    if card.enhancement == "Steel Card" and card.seal == "Red Seal":
+        ctx.x_mult(1.5)
+
+
+def _trigger_joker_independent(ctx: _ScoringContext, joker: Joker):
+    """Joker's independent scoring effect (not per-card). Applied left to right."""
+    name = joker.name
+    hand = ctx.hand_type
+    contains = ctx.hand_contains
+    played = ctx.played_cards
+    scoring = ctx.scoring_idxs
+    held = ctx.held_cards
+    all_jokers = ctx.jokers
+
+    # --- Flat mult jokers ---
+    if name == "Joker":
+        ctx.add_mult(4)
+
+    elif name == "Jolly Joker":
+        if "Pair" in contains:
+            ctx.add_mult(8)
+    elif name == "Zany Joker":
+        if "Three of a Kind" in contains:
+            ctx.add_mult(12)
+    elif name == "Mad Joker":
+        if "Two Pair" in contains:
+            ctx.add_mult(10)
+    elif name == "Crazy Joker":
+        if "Straight" in contains:
+            ctx.add_mult(12)
+    elif name == "Droll Joker":
+        if "Flush" in contains:
+            ctx.add_mult(10)
+
+    elif name == "Half Joker":
+        if len(played) <= 3:
+            ctx.add_mult(20)
+
+    elif name == "Misprint":
+        ctx.add_mult(12)  # avg of 0-23
+
+    elif name == "Mystic Summit":
+        ctx.add_mult(8)  # +15 if 0 discards; estimate 50%
+
+    elif name == "Green Joker":
+        ctx.add_mult(3)  # +1 per hand played, estimate avg +3
+
+    elif name == "Red Card":
+        ctx.add_mult(3)  # +3 per booster skipped, estimate +3
+
+    elif name == "Supernova":
+        ctx.add_mult(3)  # +mult = times hand type played, estimate +3
+
+    elif name == "Ride the Bus":
+        ctx.add_mult(3)  # +1 per consecutive non-face hand, estimate +3
+
+    elif name == "Swashbuckler":
+        total_sell = sum(j.sell_value for j in all_jokers if j.name != "Swashbuckler")
+        ctx.add_mult(max(total_sell, 8))  # fallback estimate 8
+
+    elif name == "Abstract Joker":
+        ctx.add_mult(3 * len(all_jokers))
+
+    # --- Flat chip jokers ---
+    elif name == "Blue Joker":
+        ctx.add_chips(60)  # +2 per deck card remaining, estimate ~30
+
+    elif name == "Banner":
+        ctx.add_chips(30)  # +30 per discard remaining, estimate 1
+
+    elif name == "Sly Joker":
+        if "Pair" in contains:
+            ctx.add_chips(50)
+    elif name == "Wily Joker":
+        if "Three of a Kind" in contains:
+            ctx.add_chips(100)
+    elif name == "Clever Joker":
+        if "Two Pair" in contains:
+            ctx.add_chips(80)
+    elif name == "Devious Joker":
+        if "Straight" in contains:
+            ctx.add_chips(100)
+    elif name == "Crafty Joker":
+        if "Flush" in contains:
+            ctx.add_chips(80)
+
+    elif name == "Stuntman":
+        ctx.add_chips(250)
+
+    elif name == "Raised Fist":
+        if held:
+            lowest = min(held, key=lambda c: c.rank_num)
+            ctx.add_mult(lowest.rank_num)
+
+    # --- xMult jokers ---
+    elif name == "The Duo":
+        if "Pair" in contains:
+            ctx.x_mult(2.0)
+    elif name == "The Trio":
+        if "Three of a Kind" in contains:
+            ctx.x_mult(3.0)
+    elif name == "The Family":
+        if "Four of a Kind" in contains:
+            ctx.x_mult(4.0)
+    elif name == "The Order":
+        if "Straight" in contains:
+            ctx.x_mult(3.0)
+    elif name == "The Tribe":
+        if "Flush" in contains:
+            ctx.x_mult(2.0)
+
+    elif name == "Stencil Joker":
+        empty = max(0, 5 - len(all_jokers))
+        if empty > 0:
+            ctx.x_mult(1.0 + empty)
+
+    elif name == "Loyalty Card":
+        ctx.x_mult(1.2)  # x4 every 6 hands, estimate avg
+
+    elif name == "Acrobat":
+        pass  # x3 on final hand — needs round context
+
+    elif name == "Blackboard":
+        if held and all(c.suit in ("Spades", "Clubs") for c in held):
+            ctx.x_mult(3.0)
+
+    elif name == "Steel Joker":
+        if held:
+            steel_count = sum(1 for c in held if c.enhancement == "Steel Card")
+            if steel_count:
+                ctx.x_mult(1.0 + 0.2 * steel_count)
+
+    elif name == "Hiker":
+        ctx.add_chips(15)  # +5 permanent per card, estimate avg
+
+    # --- Joker edition (applied after joker's own effect) ---
+    # This is handled in calculate_score after calling this function
+
 
 def calculate_score(
     played_cards: list[Card],
@@ -293,6 +580,11 @@ def calculate_score(
     held_cards: list[Card] | None = None,
 ) -> ScoreBreakdown:
     """Calculate the score for a played hand with full Balatro mechanics.
+
+    Uses sequential mult accumulation matching real Balatro:
+    - Chips accumulate additively
+    - Mult accumulates sequentially (add_mult and x_mult interleave by trigger order)
+    - Joker order matters
 
     Args:
         played_cards: Cards being played
@@ -310,55 +602,50 @@ def calculate_score(
     base_chips, base_mult = hand_levels.get_base(hand_type)
     hand_rank = HAND_BASE.get(hand_type, (5, 1, 1))[2]
 
-    # Phase 1: Card scoring — each scoring card adds its chip value + enhancement
-    card_chips = 0
-    add_chips = 0
-    add_mult = 0
-    x_mult = 1.0
+    ctx = _ScoringContext(
+        base_chips=base_chips,
+        base_mult=base_mult,
+        hand_type=hand_type,
+        played_cards=played_cards,
+        scoring_idxs=scoring_idxs,
+        held_cards=held_cards,
+        jokers=jokers,
+    )
 
+    # Phase 1: Score each scoring card (left to right)
     for idx in scoring_idxs:
         card = played_cards[idx]
-        # Stone cards don't add rank chips, only their +50
-        if card.enhancement == "Stone Card":
-            card_chips += ENHANCEMENT_CHIPS.get("Stone Card", 50)
-        else:
-            card_chips += card.chip_value
-            card_chips += ENHANCEMENT_CHIPS.get(card.enhancement, 0)
+        _trigger_card_scored(ctx, card)
 
-        add_mult += ENHANCEMENT_MULT.get(card.enhancement, 0)
+        # Red Seal retrigger: re-trigger the entire card scoring
+        if card.seal == "Red Seal":
+            _trigger_card_scored(ctx, card)
 
-        if card.enhancement in ENHANCEMENT_XMULT:
-            x_mult *= ENHANCEMENT_XMULT[card.enhancement]
+    # Phase 2: Held-in-hand card effects
+    for card in ctx.held_cards:
+        _trigger_held_card(ctx, card)
 
-        # Edition bonuses on scoring cards
-        add_chips += EDITION_CHIPS.get(card.edition, 0)
-        add_mult += EDITION_MULT.get(card.edition, 0)
-        if card.edition in EDITION_XMULT:
-            x_mult *= EDITION_XMULT[card.edition]
-
-        # Red Seal retrigger (simplified: double the card's contribution)
-        if card.seal in SEAL_RETRIGGER:
-            card_chips += card.chip_value
-            add_mult += ENHANCEMENT_MULT.get(card.enhancement, 0)
-
-    # Phase 2: Joker effects (simplified — covers common jokers)
-    joker_names = {j.name for j in jokers}
+    # Phase 3: Independent joker effects (left to right, ORDER MATTERS)
     for j in jokers:
-        jc, jm, jx = _joker_scoring_effect(j, hand_type, played_cards, scoring_idxs, held_cards, jokers)
-        add_chips += jc
-        add_mult += jm
-        if jx != 1.0:
-            x_mult *= jx
+        _trigger_joker_independent(ctx, j)
 
-        # Joker edition
-        add_chips += EDITION_CHIPS.get(j.edition, 0)
-        add_mult += EDITION_MULT.get(j.edition, 0)
-        if j.edition in EDITION_XMULT:
-            x_mult *= EDITION_XMULT[j.edition]
+        # Joker edition effects (applied after joker's own effect)
+        if j.edition == "Foil":
+            ctx.add_chips(50)
+        elif j.edition == "Holographic":
+            ctx.add_mult(10)
+        elif j.edition == "Polychrome":
+            ctx.x_mult(1.5)
 
-    total_chips = base_chips + card_chips + add_chips
-    total_mult = base_mult + add_mult
-    final_score = total_chips * total_mult * x_mult
+    # Final score
+    final_score = ctx.chips * ctx.mult
+
+    # Card chips = total chips added by cards (not base)
+    card_chips = sum(
+        (50 if played_cards[i].enhancement == "Stone Card"
+         else played_cards[i].chip_value + (30 if played_cards[i].enhancement == "Bonus Card" else 0))
+        for i in scoring_idxs
+    )
 
     return ScoreBreakdown(
         hand_type=hand_type,
@@ -366,197 +653,13 @@ def calculate_score(
         base_chips=base_chips,
         base_mult=base_mult,
         card_chips=card_chips,
-        add_chips=add_chips,
-        add_mult=add_mult,
-        x_mult=x_mult,
+        add_chips=int(ctx._report_add_chips),
+        add_mult=int(ctx._report_add_mult),
+        x_mult=ctx._report_x_mult,
         final_score=final_score,
         scoring_cards=scoring_idxs,
-        all_cards=[i for i in range(len(played_cards))],
+        all_cards=list(range(len(played_cards))),
     )
-
-
-def _joker_scoring_effect(
-    joker: Joker,
-    hand_type: str,
-    played: list[Card],
-    scoring_idxs: list[int],
-    held: list[Card] | None,
-    all_jokers: list[Joker] | None = None,
-) -> tuple[int, int, float]:
-    """Return (add_chips, add_mult, x_mult) for a joker's scoring effect.
-
-    This covers the most common jokers. Exotic/conditional jokers
-    that need full game state are handled by the LLM advisor.
-    """
-    name = joker.name
-    chips, mult, xm = 0, 0, 1.0
-
-    # --- Flat chip jokers ---
-    if name == "Joker":
-        mult += 4
-    elif name == "Green Joker":
-        # +1 mult per hand played this round, max +5. Estimate avg +3
-        mult += 3
-    elif name == "Blue Joker":
-        # +2 chips per remaining card in deck. Estimate ~30 cards left
-        chips += 60
-    elif name == "Red Card":
-        # +3 mult per booster pack skipped. Estimate +3
-        mult += 3
-    elif name == "Ceremonial Dagger":
-        # When blind is selected, destroy right-most joker and add double its sell value as mult
-        pass  # complex, skip
-    elif name == "Mime":
-        # Retrigger all held-in-hand effects
-        pass  # complex
-    elif name == "Acrobat":
-        # x3 mult on final hand of round
-        pass  # needs hand count context
-    elif name == "Sock and Buskin":
-        # Retrigger all face cards
-        pass  # complex
-    elif name == "Swashbuckler":
-        # +mult equal to total sell value of owned jokers. Estimate +8
-        mult += 8
-    elif name == "Troubadour":
-        # +2 hand size, -1 hand per round
-        pass
-    elif name == "Hanging Chad":
-        # Retrigger first scoring card 2 additional times
-        pass  # complex
-    elif name == "Rough Gem":
-        # +$1 per Diamond card scored
-        pass  # economy
-    elif name == "Bloodstone":
-        # 1 in 2 chance for x1.5 mult per Heart scored. Estimate avg
-        heart_count = sum(1 for i in scoring_idxs if played[i].suit == "Hearts")
-        if heart_count > 0:
-            xm *= (1.0 + 0.25 * heart_count)  # ~50% chance of x1.5 per heart
-    elif name == "Arrowhead":
-        chips += 50 * sum(1 for i in scoring_idxs if played[i].suit == "Spades")
-    elif name == "Onyx Agate":
-        mult += 7 * sum(1 for i in scoring_idxs if played[i].suit == "Clubs")
-    elif name == "Greedy Joker":
-        chips += 3 * sum(1 for i in scoring_idxs if played[i].suit == "Diamonds")
-    elif name == "Lusty Joker":
-        mult += 3 * sum(1 for i in scoring_idxs if played[i].suit == "Hearts")
-    elif name == "Wrathful Joker":
-        mult += 3 * sum(1 for i in scoring_idxs if played[i].suit == "Spades")
-    elif name == "Gluttonous Joker":
-        mult += 3 * sum(1 for i in scoring_idxs if played[i].suit == "Clubs")
-    elif name == "Jolly Joker":
-        if hand_type in ("Pair", "Two Pair", "Full House", "Four of a Kind", "Five of a Kind"):
-            mult += 8
-    elif name == "Zany Joker":
-        if hand_type in ("Three of a Kind", "Full House", "Four of a Kind", "Five of a Kind"):
-            mult += 12
-    elif name == "Mad Joker":
-        if hand_type in ("Two Pair", "Full House"):
-            mult += 10
-    elif name == "Crazy Joker":
-        if hand_type in ("Straight", "Straight Flush"):
-            mult += 12
-    elif name == "Droll Joker":
-        if hand_type in ("Flush", "Flush House", "Flush Five", "Straight Flush"):
-            mult += 10
-    elif name == "Sly Joker":
-        if hand_type in ("Pair", "Two Pair", "Full House", "Four of a Kind"):
-            chips += 50
-    elif name == "Wily Joker":
-        if hand_type in ("Three of a Kind", "Full House", "Four of a Kind"):
-            chips += 100
-    elif name == "Clever Joker":
-        if hand_type in ("Two Pair", "Full House"):
-            chips += 80
-    elif name == "Devious Joker":
-        if hand_type in ("Straight", "Straight Flush"):
-            chips += 100
-    elif name == "Crafty Joker":
-        if hand_type in ("Flush", "Flush House", "Flush Five", "Straight Flush"):
-            chips += 80
-    elif name == "Half Joker":
-        if len(played) <= 3:
-            mult += 20
-    elif name == "Stencil Joker":
-        # +1 xMult per empty joker slot (assume 5 slots)
-        joker_count = len(all_jokers) if all_jokers else 1
-        empty = max(0, 5 - joker_count)
-        if empty > 0:
-            xm *= (1.0 + empty)
-    elif name == "Misprint":
-        mult += 12  # average of 0-23
-    elif name == "Raised Fist":
-        if held:
-            lowest = min(held, key=lambda c: c.rank_num)
-            mult += lowest.rank_num
-    elif name == "Banner":
-        mult += 30  # +30 chips per discard remaining — estimate 1 discard left
-    elif name == "Mystic Summit":
-        mult += 8  # +15 mult if 0 discards left — estimate 50% chance
-    elif name == "Loyalty Card":
-        xm *= 1.2  # xMult every 6 hands — estimate average contribution
-    elif name == "Scary Face":
-        chips += 30 * sum(1 for i in scoring_idxs
-                          if played[i].rank in ("Jack", "Queen", "King"))
-    elif name == "Abstract Joker":
-        joker_count = len(all_jokers) if all_jokers else 1
-        mult += 3 * joker_count
-    elif name == "Ride the Bus":
-        mult += 3  # +1 mult per consecutive non-face hand — estimate avg +3
-    elif name == "Supernova":
-        mult += 3  # +mult equal to times this hand type was played — estimate avg +3
-    elif name == "Blackboard":
-        if held and all(c.suit in ("Spades", "Clubs") for c in held):
-            xm *= 3.0
-    elif name == "The Duo":
-        if hand_type in ("Pair", "Two Pair", "Full House", "Four of a Kind", "Five of a Kind"):
-            xm *= 2.0
-    elif name == "The Trio":
-        if hand_type in ("Three of a Kind", "Full House", "Four of a Kind", "Five of a Kind"):
-            xm *= 3.0
-    elif name == "The Family":
-        if hand_type in ("Four of a Kind", "Five of a Kind"):
-            xm *= 4.0
-    elif name == "The Order":
-        if hand_type in ("Straight", "Straight Flush"):
-            xm *= 3.0
-    elif name == "The Tribe":
-        if hand_type in ("Flush", "Flush House", "Flush Five", "Straight Flush"):
-            xm *= 2.0
-    elif name == "Fibonacci":
-        fib_ranks = {"Ace", "2", "3", "5", "8"}
-        mult += 8 * sum(1 for i in scoring_idxs if played[i].rank in fib_ranks)
-    elif name == "Steel Joker":
-        if held:
-            steel_count = sum(1 for c in held if c.enhancement == "Steel Card")
-            if steel_count:
-                xm *= (1.0 + 0.2 * steel_count)
-    elif name == "Photograph":
-        # First face card played gets xMult
-        for i in scoring_idxs:
-            if played[i].rank in ("Jack", "Queen", "King"):
-                xm *= 2.0
-                break
-    elif name == "Even Steven":
-        even_ranks = {"2", "4", "6", "8", "10"}
-        mult += 4 * sum(1 for i in scoring_idxs if played[i].rank in even_ranks)
-    elif name == "Odd Todd":
-        odd_ranks = {"3", "5", "7", "9", "Ace"}
-        chips += 31 * sum(1 for i in scoring_idxs if played[i].rank in odd_ranks)
-    elif name == "Scholar":
-        chips += 20 * sum(1 for i in scoring_idxs if played[i].rank == "Ace")
-        mult += 4 * sum(1 for i in scoring_idxs if played[i].rank == "Ace")
-    elif name == "Walkie Talkie":
-        count_10_4 = sum(1 for i in scoring_idxs if played[i].rank in ("10", "4"))
-        chips += 10 * count_10_4
-        mult += 4 * count_10_4
-    elif name == "Supernova":
-        pass  # already handled above
-    elif name == "Hiker":
-        # Permanently +5 chips to each played card — estimate avg +15
-        chips += 15
-
-    return chips, mult, xm
 
 
 # ============================================================

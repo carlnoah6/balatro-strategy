@@ -23,6 +23,228 @@ class Archetype(Enum):
     FOUR_KIND = "four_kind"  # Four of a Kind focus
     HIGH_MULT = "high_mult"  # xMult stacking (Glass, Polychrome)
     CHIP_STACK = "chip_stack"  # Raw chip stacking (Steel, Bonus)
+    FACE_CARDS = "face_cards"  # Baron + Steel Kings
+    HIGH_CARD = "high_card"    # High Card spam with scaling jokers
+    LUCKY = "lucky"            # Lucky card / probability build
+    SCALING = "scaling"        # Hiker / Constellation snowball
+
+
+# ============================================================
+# Joker Tier List (from knowledge base)
+# ============================================================
+
+class JokerTier(Enum):
+    S_PLUS = "S+"
+    S = "S"
+    A = "A"
+    B = "B"
+    C = "C"
+    UNKNOWN = "?"
+
+JOKER_TIERS: dict[str, JokerTier] = {
+    # S+ Tier — run-defining, always buy
+    "Blueprint": JokerTier.S_PLUS,
+    "Brainstorm": JokerTier.S_PLUS,
+    "Triboulet": JokerTier.S_PLUS,
+    # S Tier — build carriers
+    "Vampire": JokerTier.S,
+    "Cavendish": JokerTier.S,
+    "The Duo": JokerTier.S,
+    "The Trio": JokerTier.S,
+    "The Family": JokerTier.S,
+    "Spare Trousers": JokerTier.S,
+    "Canio": JokerTier.S,
+    "Campfire": JokerTier.S,
+    "DNA": JokerTier.S,
+    # A Tier — strong picks
+    "Hiker": JokerTier.A,
+    "Fortune Teller": JokerTier.A,
+    "Rocket": JokerTier.A,
+    "Seltzer": JokerTier.A,
+    "Trading Card": JokerTier.A,
+    "Bloodstone": JokerTier.A,
+    "Perkeo": JokerTier.A,
+    "Hologram": JokerTier.A,
+    "Driver's License": JokerTier.A,
+    "Steel Joker": JokerTier.A,
+    "Card Sharp": JokerTier.A,
+    "Shortcut": JokerTier.A,
+    "Baron": JokerTier.A,
+    "Sock and Buskin": JokerTier.A,
+    "Smeared Joker": JokerTier.A,
+    "Throwback": JokerTier.A,
+    "Oops! All 6s": JokerTier.A,
+    # B Tier — solid role players
+    "Supernova": JokerTier.B,
+    "Scholar": JokerTier.B,
+    "Walkie Talkie": JokerTier.B,
+    "Wee Joker": JokerTier.B,
+    "Square Joker": JokerTier.B,
+    "Half Joker": JokerTier.B,
+    "Constellation": JokerTier.B,
+    "Ceremonial Dagger": JokerTier.B,
+    "Blackboard": JokerTier.B,
+    "Shoot The Moon": JokerTier.B,
+    "Abstract Joker": JokerTier.B,
+    "Hack": JokerTier.B,
+    "Ride The Bus": JokerTier.B,
+    "Green Joker": JokerTier.B,
+    "Acrobat": JokerTier.B,
+    "Mime": JokerTier.B,
+    "Castle": JokerTier.B,
+    "Runner": JokerTier.B,
+    "Lucky Cat": JokerTier.B,
+    "Glass Joker": JokerTier.B,
+    "Flower Pot": JokerTier.B,
+    "Obelisk": JokerTier.B,
+    "Joker Stencil": JokerTier.B,
+    # C Tier — situational
+    "Matador": JokerTier.C,
+    "The Idol": JokerTier.C,
+    "Juggler": JokerTier.C,
+    "Splash": JokerTier.C,
+    "Pareidolia": JokerTier.C,
+    "Loyalty Card": JokerTier.C,
+    "Dusk": JokerTier.C,
+    "Bull": JokerTier.C,
+    "Banner": JokerTier.C,
+    "Astronomer": JokerTier.C,
+    "Drunkard": JokerTier.C,
+    "Troubadour": JokerTier.C,
+    "Hallucination": JokerTier.C,
+    "Chaos The Clown": JokerTier.C,
+    "Mr. Bones": JokerTier.C,
+    "Merry Andy": JokerTier.C,
+    "Red Card": JokerTier.C,
+    "Showman": JokerTier.C,
+    "Stone Joker": JokerTier.C,
+    "Marble Joker": JokerTier.C,
+    "Luchador": JokerTier.C,
+    "Four Fingers": JokerTier.C,
+    "Séance": JokerTier.C,
+}
+
+# Tier → score bonus for shop evaluation
+TIER_SCORE_BONUS: dict[JokerTier, float] = {
+    JokerTier.S_PLUS: 4.0,
+    JokerTier.S: 3.0,
+    JokerTier.A: 2.0,
+    JokerTier.B: 0.5,
+    JokerTier.C: -0.5,
+    JokerTier.UNKNOWN: 0.0,
+}
+
+
+# ============================================================
+# Economy Jokers — jokers that generate money
+# ============================================================
+
+ECONOMY_JOKERS = {
+    "Rocket", "Golden Joker", "Delayed Gratification", "Business Card",
+    "To the Moon", "Satellite", "Cloud 9", "Reserved Parking",
+    "Mail-In Rebate", "Hallucination", "Chaos The Clown",
+}
+
+# Scaling jokers — buy early for maximum compound value
+SCALING_JOKERS = {
+    "Hiker", "Constellation", "Wee Joker", "Runner", "Square Joker",
+    "Green Joker", "Ride The Bus", "Fortune Teller", "Lucky Cat",
+    "Spare Trousers", "Hologram",
+}
+
+
+# ============================================================
+# Planet → Hand Type mapping
+# ============================================================
+
+PLANET_HAND_MAP = {
+    "Pluto": "High Card",
+    "Mercury": "Pair",
+    "Uranus": "Two Pair",
+    "Venus": "Three of a Kind",
+    "Saturn": "Straight",
+    "Jupiter": "Flush",
+    "Earth": "Full House",
+    "Mars": "Four of a Kind",
+    "Neptune": "Straight Flush",
+    "Planet X": "Five of a Kind",
+    "Ceres": "Flush House",
+    "Eris": "Flush Five",
+}
+
+# Reverse: hand type → planet name
+HAND_PLANET_MAP = {v: k for k, v in PLANET_HAND_MAP.items()}
+
+
+# ============================================================
+# Boss Blind Counter-Strategies
+# ============================================================
+
+BOSS_BLIND_COUNTERS: dict[str, dict] = {
+    "The Psychic": {
+        "effect": "Must play 5 cards",
+        "danger_archetypes": [Archetype.PAIRS, Archetype.HIGH_CARD],
+        "counter": "Play 5 cards with your core hand inside. Splash Joker helps.",
+        "counter_jokers": ["Splash"],
+    },
+    "The Pillar": {
+        "effect": "Cards played previously are debuffed",
+        "danger_archetypes": [Archetype.FOUR_KIND],
+        "counter": "Vary your played cards. Large/varied deck helps.",
+        "counter_jokers": [],
+    },
+    "The Mark": {
+        "effect": "Face cards drawn face down",
+        "danger_archetypes": [Archetype.FACE_CARDS],
+        "counter": "Avoid relying on face card identification.",
+        "counter_jokers": ["Luchador"],
+    },
+    "The Plant": {
+        "effect": "Face cards are debuffed",
+        "danger_archetypes": [Archetype.FACE_CARDS],
+        "counter": "Hard counter to face builds. Reroll or skip.",
+        "counter_jokers": ["Luchador"],
+    },
+    "The Fish": {
+        "effect": "Cards drawn face down",
+        "danger_archetypes": [],
+        "counter": "Play hands that work regardless of card visibility.",
+        "counter_jokers": ["Luchador"],
+    },
+    "The Verdant": {
+        "effect": "Debuffs a specific suit (Clubs)",
+        "danger_archetypes": [Archetype.FLUSH],
+        "counter": "Keep 2+ suits viable. Smeared Joker merges suits.",
+        "counter_jokers": ["Smeared Joker", "Luchador"],
+    },
+    "The Crimson": {
+        "effect": "Debuffs a specific suit (Hearts)",
+        "danger_archetypes": [Archetype.FLUSH],
+        "counter": "Keep 2+ suits viable. Smeared Joker merges suits.",
+        "counter_jokers": ["Smeared Joker", "Luchador"],
+    },
+    "The Violet": {
+        "effect": "Debuffs a specific suit (Spades)",
+        "danger_archetypes": [Archetype.FLUSH],
+        "counter": "Keep 2+ suits viable. Smeared Joker merges suits.",
+        "counter_jokers": ["Smeared Joker", "Luchador"],
+    },
+    "The Amber": {
+        "effect": "Debuffs a specific suit (Diamonds)",
+        "danger_archetypes": [Archetype.FLUSH],
+        "counter": "Keep 2+ suits viable. Smeared Joker merges suits.",
+        "counter_jokers": ["Smeared Joker", "Luchador"],
+    },
+}
+
+# Key vouchers worth buying
+PRIORITY_VOUCHERS = {
+    "Director's Cut", "Reroll Surplus",  # Reroll boss blinds
+    "Overstock", "Overstock Plus",       # More shop cards
+    "Hone", "Glow Up",                  # Better edition odds
+    "Money Tree", "Seed Money",          # Raise interest cap
+    "Blank", "Antimatter",               # Extra joker slot
+}
 
 
 # Jokers that strongly signal an archetype
@@ -47,6 +269,18 @@ ARCHETYPE_JOKERS = {
         "Obelisk", "Abstract Joker", "Misprint", "Ride the Bus",
         "Green Joker", "Red Card", "Hologram",
     },
+    Archetype.FACE_CARDS: {
+        "Baron", "Mime", "Triboulet", "Sock and Buskin", "Pareidolia",
+    },
+    Archetype.HIGH_CARD: {
+        "Supernova", "Green Joker", "Square Joker", "Card Sharp",
+    },
+    Archetype.LUCKY: {
+        "Oops! All 6s", "Lucky Cat", "Bloodstone", "Business Card",
+    },
+    Archetype.SCALING: {
+        "Hiker", "Runner", "Constellation", "Wee Joker", "Square Joker",
+    },
 }
 
 # Hand types that signal an archetype
@@ -55,6 +289,7 @@ ARCHETYPE_HANDS = {
     Archetype.PAIRS: {"Pair", "Two Pair", "Full House", "Flush House"},
     Archetype.STRAIGHT: {"Straight", "Straight Flush"},
     Archetype.FOUR_KIND: {"Four of a Kind", "Five of a Kind", "Flush Five"},
+    Archetype.HIGH_CARD: {"High Card"},
 }
 
 
@@ -234,6 +469,12 @@ def build_context(state: dict, archetype: ArchetypeTracker | None = None,
 def should_discard(ctx: GameContext) -> tuple[bool, list[int], str]:
     """Decide whether to discard and which cards.
 
+    Improved with:
+    - Better archetype-aware card retention (flush, pairs, straight, face_cards, etc.)
+    - Enhanced card priority scoring (keep high-value enhancements)
+    - Boss blind awareness (conserve discards for boss rounds)
+    - Smarter aggression based on hands remaining vs score deficit
+
     Returns (should_discard, card_indices_to_discard, reasoning).
     """
     if ctx.discards_left <= 0:
@@ -256,53 +497,82 @@ def should_discard(ctx: GameContext) -> tuple[bool, list[int], str]:
     if ctx.hands_left <= 1:
         return (False, [], "Last hand — must play")
 
+    # Boss blind round: be more conservative with discards (save for later hands)
+    is_boss = ctx.round_num == 2 or bool(ctx.blind_info.get("boss_name"))
+    discard_budget = ctx.discards_left
+    if is_boss and ctx.hands_left >= 3 and best.hand_rank >= 4:
+        # Decent hand on boss round — save discards for later
+        return (False, [], f"Boss round — save discards, hand is {best.hand_type}")
+
     # Calculate discard value: what cards are NOT in the best hand?
     best_indices = set(best.all_cards)
     non_scoring = [i for i in range(len(ctx.hand_cards)) if i not in best_indices]
 
-    # Archetype-aware discard: keep cards that fit our build
+    # Archetype-aware discard: score each non-scoring card for "keep value"
     arch = ctx.archetype.current
     discard_candidates = []
 
+    # Pre-compute hand statistics
+    suit_counts = Counter(c.suit for c in ctx.hand_cards)
+    rank_counts = Counter(c.rank for c in ctx.hand_cards)
+    dominant_suit = suit_counts.most_common(1)[0][0] if suit_counts else ""
+    all_ranks = sorted(set(c.rank_num for c in ctx.hand_cards))
+
     for i in non_scoring:
         card = ctx.hand_cards[i]
-        keep = False
+        keep_score = 0.0  # higher = more reason to keep
 
+        # Always keep enhanced/edition/seal cards (they have permanent value)
+        if card.enhancement:
+            keep_score += 3.0
+            if card.enhancement in ("Steel", "Glass", "Gold"):
+                keep_score += 2.0  # premium enhancements
+        if card.edition:
+            keep_score += 2.0
+        if card.seal:
+            keep_score += 2.0
+
+        # Archetype-specific retention
         if arch == Archetype.FLUSH:
-            # Keep cards matching the dominant suit
-            suit_counts = Counter(c.suit for c in ctx.hand_cards)
-            dominant_suit = suit_counts.most_common(1)[0][0]
             if card.suit == dominant_suit:
-                keep = True
-
-        elif arch == Archetype.PAIRS:
-            # Keep cards with matching ranks
-            rank_counts = Counter(c.rank for c in ctx.hand_cards)
+                keep_score += 2.0
+        elif arch in (Archetype.PAIRS, Archetype.FOUR_KIND):
             if rank_counts[card.rank] >= 2:
-                keep = True
-
+                keep_score += 3.0  # part of a pair/set
         elif arch == Archetype.STRAIGHT:
-            # Keep cards that could form a straight
-            ranks = sorted(set(c.rank_num for c in ctx.hand_cards))
-            if _contributes_to_straight(card.rank_num, ranks):
-                keep = True
+            if _contributes_to_straight(card.rank_num, all_ranks):
+                keep_score += 2.0
+        elif arch == Archetype.FACE_CARDS:
+            if card.rank in ("Jack", "Queen", "King"):
+                keep_score += 3.0
+        elif arch == Archetype.HIGH_CARD:
+            if card.rank == "Ace":
+                keep_score += 1.0
 
-        if not keep:
-            discard_candidates.append(i)
+        # High-rank cards have marginal value (more chips when scored)
+        if card.rank_num >= 10:
+            keep_score += 0.5
 
-    if not discard_candidates:
+        if keep_score < 2.0:
+            discard_candidates.append((i, keep_score))
+
+    # Sort by keep_score ascending (discard lowest value first)
+    discard_candidates.sort(key=lambda x: x[1])
+    discard_indices = [i for i, _ in discard_candidates]
+
+    if not discard_indices:
         # Nothing obvious to discard — check if hand is weak enough to warrant it
         if best.hand_rank <= 3 and ctx.hands_left > 1:
             # Weak hand (High Card / Pair / Two Pair), discard non-scoring cards aggressively
-            discard_candidates = non_scoring[:min(5, ctx.discards_left)]
+            discard_indices = non_scoring[:min(5, discard_budget)]
         elif best.final_score < chips_needed * 0.7 and ctx.hands_left > 1:
             # Score too low for target — discard non-scoring to try for better
-            discard_candidates = non_scoring[:min(3, ctx.discards_left)]
+            discard_indices = non_scoring[:min(3, discard_budget)]
         else:
             return (False, [], f"Hand is decent ({best.hand_type}), no clear discards")
 
     # Limit to available discards
-    to_discard = discard_candidates[:ctx.discards_left]
+    to_discard = discard_indices[:discard_budget]
 
     if not to_discard:
         return (False, [], "No cards worth discarding")
@@ -359,14 +629,35 @@ def _contributes_to_straight(rank: int, all_ranks: list[int]) -> bool:
 # Shop Strategy
 # ============================================================
 
+def _has_economy_joker(ctx: GameContext) -> bool:
+    """Check if we already have an economy joker."""
+    return any(j.name in ECONOMY_JOKERS for j in ctx.jokers)
+
+
+def _count_xmult_jokers(ctx: GameContext) -> int:
+    """Count jokers that provide xMult."""
+    xmult_names = {
+        "Cavendish", "The Duo", "The Trio", "The Family", "The Order",
+        "The Tribe", "Bloodstone", "Card Sharp", "Oops! All 6s",
+        "Driver's License", "Steel Joker", "Glass Joker", "Acrobat",
+        "Baron", "Hologram", "Lucky Cat", "Vampire", "Campfire",
+        "Blueprint", "Brainstorm", "Triboulet",
+    }
+    return sum(1 for j in ctx.jokers if j.name in xmult_names)
+
+
 def evaluate_shop_item(item: dict, ctx: GameContext) -> tuple[float, str]:
     """Score a shop item from 0-10 based on strategic value.
+
+    Incorporates joker tier awareness, economy management, planet
+    prioritization, and archetype synergy from the knowledge base.
 
     Returns (score, reasoning).
     """
     name = item.get("name", "")
     cost = item.get("cost", 0)
     item_type = item.get("type", "")
+    edition = item.get("edition", "")
 
     if cost > ctx.dollars:
         return (0.0, "Can't afford")
@@ -374,22 +665,105 @@ def evaluate_shop_item(item: dict, ctx: GameContext) -> tuple[float, str]:
     score = 5.0  # baseline
     reasons = []
 
-    # Economy check: buying shouldn't drop below interest threshold
+    # ── Economy guard ──────────────────────────────────────────
+    # Protect the $25 interest threshold (max $5/round)
     money_after = ctx.dollars - cost
-    interest_loss = max(0, ctx.interest_money - min(money_after // 5, 5))
-    if interest_loss > 0 and ctx.ante >= 2:
-        score -= interest_loss * 1.5
-        reasons.append(f"loses ${interest_loss} interest")
+    interest_before = min(ctx.dollars // 5, 5)
+    interest_after = min(money_after // 5, 5)
+    interest_loss = interest_before - interest_after
 
-    # Joker slot check
+    if interest_loss > 0 and ctx.ante >= 2:
+        # Losing interest is costly — $1/round compounds over the run
+        penalty = interest_loss * 2.0
+        score -= penalty
+        reasons.append(f"loses ${interest_loss}/round interest")
+
+    # Hard rule: never drop below $15 in ante 2-4 unless item is S/S+ tier
+    tier = JOKER_TIERS.get(name, JokerTier.UNKNOWN)
+    if money_after < 15 and 2 <= ctx.ante <= 4 and tier not in (JokerTier.S_PLUS, JokerTier.S):
+        score -= 2.0
+        reasons.append("would break economy floor ($15)")
+
+    # ── Joker evaluation ───────────────────────────────────────
     if item_type == "Joker":
         if ctx.joker_space <= 0:
-            return (0.0, "No joker slots")
+            # Negative edition doesn't use a slot
+            if edition != "Negative":
+                return (0.0, "No joker slots")
+            else:
+                score += 1.0
+                reasons.append("Negative edition — free slot")
 
-        # Jokers are the core scaling mechanic — always valuable early
-        if ctx.ante <= 3 and len([j for j in (ctx.jokers or []) if True]) < 3:
+        # Tier-based scoring (highest impact improvement)
+        tier_bonus = TIER_SCORE_BONUS.get(tier, 0.0)
+        if tier_bonus != 0:
+            score += tier_bonus
+            reasons.append(f"{tier.value}-tier joker")
+
+        # S+ tier: always buy if affordable (override economy concerns)
+        if tier == JokerTier.S_PLUS:
+            score = max(score, 9.0)
+            reasons.append("RUN-DEFINING — always buy")
+
+        # Edition bonus (Polychrome > Holographic > Foil)
+        if edition == "Polychrome":
+            score += 2.0
+            reasons.append("Polychrome edition (×1.5)")
+        elif edition == "Holographic":
+            score += 1.5
+            reasons.append("Holographic edition (+10 mult)")
+        elif edition == "Foil":
+            score += 0.5
+            reasons.append("Foil edition (+50 chips)")
+        elif edition == "Negative":
+            score += 2.5
+            reasons.append("Negative edition — no slot used")
+
+        # Early game: need jokers to survive
+        num_jokers = len(ctx.jokers)
+        if ctx.ante <= 3 and num_jokers < 3:
             score += 2.0
             reasons.append("early game, need jokers")
+
+        # Economy joker awareness
+        if name in ECONOMY_JOKERS:
+            if not _has_economy_joker(ctx):
+                score += 1.5
+                reasons.append("first economy joker")
+            elif ctx.ante <= 2:
+                score += 0.5
+                reasons.append("extra economy early")
+
+        # Scaling jokers: buy early for compound value, penalize late
+        if name in SCALING_JOKERS:
+            if ctx.ante <= 2:
+                score += 2.0
+                reasons.append("scaling joker — early = max compound")
+            elif ctx.ante <= 4:
+                score += 1.0
+                reasons.append("scaling joker — still good mid-game")
+            else:
+                score -= 1.0
+                reasons.append("scaling joker — too late to compound")
+
+        # xMult awareness: need at least 1 by ante 4, 2+ by ante 6
+        xmult_count = _count_xmult_jokers(ctx)
+        xmult_names = {
+            "Cavendish", "The Duo", "The Trio", "The Family", "The Order",
+            "The Tribe", "Bloodstone", "Card Sharp", "Oops! All 6s",
+            "Driver's License", "Steel Joker", "Glass Joker", "Acrobat",
+            "Baron", "Hologram", "Lucky Cat", "Vampire", "Campfire",
+        }
+        if name in xmult_names:
+            if xmult_count == 0 and ctx.ante >= 3:
+                score += 2.5
+                reasons.append("NEED xMult — first one")
+            elif xmult_count < 2 and ctx.ante >= 5:
+                score += 2.0
+                reasons.append("need more xMult for late game")
+            else:
+                score += 1.0
+                reasons.append("xMult source")
 
         # Archetype synergy
         arch = ctx.archetype.current
@@ -402,37 +776,99 @@ def evaluate_shop_item(item: dict, ctx: GameContext) -> tuple[float, str]:
                     score += 2.0
                     reasons.append(f"signals {a.value}")
                 else:
-                    score -= 1.0
-                    reasons.append(f"off-archetype ({a.value})")
+                    # Off-archetype but high tier is still worth considering
+                    if tier in (JokerTier.S_PLUS, JokerTier.S):
+                        score += 0.5
+                        reasons.append(f"off-archetype but high tier")
+                    else:
+                        score -= 1.0
+                        reasons.append(f"off-archetype ({a.value})")
                 break
 
+        # Universal formula check: 1 econ + 1-2 scaling + 1 utility + 2-3 xMult
+        # Gently nudge toward filling gaps
+        if num_jokers >= 3 and xmult_count == 0 and name not in xmult_names:
+            score -= 0.5
+            reasons.append("have jokers but no xMult yet")
+
+    # ── Planet card evaluation ─────────────────────────────────
     elif item_type == "Planet":
         if ctx.consumable_space <= 0:
             return (0.0, "No consumable slots")
-        # Planet cards are good if they match our archetype
-        # (planet name maps to hand type, but we'd need a lookup)
-        score += 1.0
-        reasons.append("planet card")
 
+        # Map planet name to hand type
+        planet_hand = PLANET_HAND_MAP.get(name, "")
+        arch = ctx.archetype.current
+
+        if planet_hand:
+            # Check if this planet matches our archetype's preferred hands
+            arch_hands = ARCHETYPE_HANDS.get(arch, set())
+            if planet_hand in arch_hands:
+                score += 3.0
+                reasons.append(f"levels {planet_hand} — core hand for {arch.value}")
+            elif arch == Archetype.UNDECIDED:
+                # Check what we've been playing
+                if ctx.archetype.hand_history:
+                    recent = ctx.archetype.hand_history[-5:]
+                    if planet_hand in recent:
+                        score += 2.0
+                        reasons.append(f"levels {planet_hand} — recently played")
+                    else:
+                        score += 0.5
+                        reasons.append(f"levels {planet_hand}")
+                else:
+                    score += 1.0
+                    reasons.append(f"levels {planet_hand}")
+            else:
+                score -= 0.5
+                reasons.append(f"levels {planet_hand} — not our build")
+        else:
+            score += 1.0
+            reasons.append("planet card")
+
+    # ── Tarot evaluation ───────────────────────────────────────
     elif item_type == "Tarot":
         if ctx.consumable_space <= 0:
             return (0.0, "No consumable slots")
         score += 0.5
         reasons.append("tarot card")
+        # Suit-changing tarots are great for flush builds
+        arch = ctx.archetype.current
+        if arch == Archetype.FLUSH:
+            suit_tarots = {"Lovers", "Empress", "Emperor", "Hierophant"}
+            if name in suit_tarots:
+                score += 2.0
+                reasons.append("suit conversion for flush build")
 
+    # ── Voucher evaluation ─────────────────────────────────────
     elif item_type == "Voucher":
-        score += 0.5
-        reasons.append("voucher")
+        if name in PRIORITY_VOUCHERS:
+            score += 2.5
+            reasons.append(f"priority voucher")
+        else:
+            score += 0.5
+            reasons.append("voucher")
 
-    # Early game: prioritize economy
-    if ctx.ante <= 2 and cost > 4:
+    # ── Game phase adjustments ─────────────────────────────────
+    # Early game: aggressive rerolling is correct, but don't overspend
+    if ctx.ante <= 2 and cost > 4 and tier not in (JokerTier.S_PLUS, JokerTier.S, JokerTier.A):
         score -= 1.0
         reasons.append("expensive for early game")
 
-    # Late game: prioritize power
-    if ctx.ante >= 5:
+    # Mid game: need xMult sources
+    if 4 <= ctx.ante <= 6 and item_type == "Joker":
+        if _count_xmult_jokers(ctx) == 0:
+            score += 0.5
+            reasons.append("mid-game — any joker helps find xMult")
+
+    # Late game: power matters more than economy
+    if ctx.ante >= 6:
         score += 1.0
         reasons.append("late game — power matters more")
+        # Reduce economy penalty in late game
+        if interest_loss > 0:
+            score += interest_loss * 0.5  # partially offset the penalty
+            reasons.append("economy less critical late")
 
     return (max(0.0, min(10.0, score)), "; ".join(reasons) if reasons else "baseline")
 
@@ -448,3 +884,73 @@ def shop_decisions(ctx: GameContext) -> list[tuple[int, float, str]]:
         results.append((i, score, reason))
     results.sort(key=lambda x: -x[1])
     return results
+
+
+# ============================================================
+# Boss Blind Strategy
+# ============================================================
+
+def get_boss_counter(boss_name: str, ctx: GameContext) -> dict:
+    """Get counter-strategy info for a boss blind.
+
+    Returns dict with keys: effect, counter, danger_level (0-3),
+    counter_jokers, and strategy_notes.
+    """
+    info = BOSS_BLIND_COUNTERS.get(boss_name, {})
+    if not info:
+        return {
+            "effect": "Unknown boss",
+            "counter": "Play normally",
+            "danger_level": 0,
+            "counter_jokers": [],
+            "strategy_notes": "",
+        }
+
+    arch = ctx.archetype.current
+    danger_archetypes = info.get("danger_archetypes", [])
+    danger_level = 2 if arch in danger_archetypes else 1
+
+    # Check if we have counter jokers
+    counter_jokers = info.get("counter_jokers", [])
+    have_counter = any(j.name in counter_jokers for j in ctx.jokers)
+    if have_counter:
+        danger_level = max(0, danger_level - 1)
+
+    # Extra danger if we're low on hands/discards
+    if ctx.hands_left <= 2:
+        danger_level = min(3, danger_level + 1)
+
+    return {
+        "effect": info.get("effect", ""),
+        "counter": info.get("counter", ""),
+        "danger_level": danger_level,
+        "counter_jokers": counter_jokers,
+        "have_counter": have_counter,
+        "strategy_notes": f"Build: {arch.value}, danger: {danger_level}/3",
+    }
+
+
+# ============================================================
+# Economy Strategy Helpers
+# ============================================================
+
+def should_reroll(ctx: GameContext) -> tuple[bool, str]:
+    """Decide whether to spend $5 to reroll the shop.
+
+    Returns (should_reroll, reasoning).
+    """
+    # Never reroll if it would break interest threshold in mid-game
+    if ctx.ante >= 2 and ctx.dollars - 5 < 25 and ctx.dollars >= 25:
+        return (False, "Would break $25 interest threshold")
+
+    # Aggressive rerolling is correct in ante 1-2
+    if ctx.ante <= 2 and ctx.dollars >= 10:
+        num_jokers = len(ctx.jokers)
+        if num_jokers < 2:
+            return (True, "Early game — need jokers, can afford reroll")
+
+    # Late game: reroll if we have excess money and need xMult
+    if ctx.ante >= 5 and ctx.dollars >= 35 and _count_xmult_jokers(ctx) < 2:
+        return (True, "Late game — excess money, need xMult")
+
+    return (False, "Save money")

@@ -14,11 +14,15 @@ from typing import Optional
 import requests
 
 from .scoring import Card, Joker, HandLevel, ScoreBreakdown, find_best_hands
-from .strategy import GameContext, Archetype, ArchetypeTracker
+from .strategy import (
+    GameContext, Archetype, ArchetypeTracker,
+    JOKER_TIERS, JokerTier, PLANET_HAND_MAP, ARCHETYPE_HANDS,
+    get_boss_counter,
+)
 
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:8180/v1")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "sk-luna-2026-openclaw")
-LLM_MODEL = os.environ.get("LLM_MODEL", "kimi-k2.5")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-3-flash")
 
 # Track LLM call stats
 _llm_stats = {"calls": 0, "failures": 0, "total_ms": 0, "input_tokens": 0, "output_tokens": 0}
@@ -46,24 +50,54 @@ Each hand type has base chips/mult (upgradeable via Planet cards):
 ## Key Mechanics
 - Jokers trigger left-to-right; order matters for conditional effects
 - xMult sources multiply together (1.5 × 2.0 = 3.0x)
-- Interest: $1 per $5 saved, max $5 at $25+. Protect the $25 threshold.
+- Interest: $1 per $5 saved, max $5 at $25+. PROTECT the $25 threshold.
 - Enhancements: Bonus(+30 chips), Mult(+4 mult), Glass(×2 but can break), Steel(×1.5 while held), Stone(+50 chips, no rank/suit), Gold(+$3 end of round)
 - Editions: Foil(+50 chips), Holographic(+10 mult), Polychrome(×1.5)
 - Red Seal: retrigger card scoring
+- Negative edition: joker doesn't use a slot — extremely valuable
+
+## Joker Tier List (MEMORIZE THIS)
+S+ (ALWAYS BUY): Blueprint, Brainstorm, Triboulet
+S (Build Carriers): Vampire, Cavendish, The Duo, The Trio, The Family, Spare Trousers, Canio, Campfire, DNA
+A (Strong): Hiker, Rocket, Seltzer, Trading Card, Bloodstone, Perkeo, Hologram, Driver's License, Steel Joker, Card Sharp, Shortcut, Baron, Sock and Buskin, Smeared Joker, Throwback, Oops! All 6s
+
+## Universal Win Formula (from Chinese community 知乎)
+1 Economy Joker + 1-2 Scaling Jokers + 1 Utility Joker + 2-3 xMult Jokers ≈ 80% win rate
+
+## Economy Rules
+- Ante 1-2: Aggressive rerolling OK. Buy scaling jokers ASAP (they compound).
+- Ante 2-4: NEVER drop below $15. Protect $25 interest threshold.
+- Ante 5+: xMult jokers are essential. Economy matters less — spend for power.
+- Scaling jokers (Hiker, Constellation, Wee Joker) lose value if bought late.
+
+## Boss Blind Awareness
+- The Psychic (must play 5 cards): Use Splash Joker. Play 5 cards with core hand inside.
+- The Plant (face cards debuffed): Hard counter to face builds. Reroll/skip.
+- The Pillar (replayed cards debuffed): Vary your plays. Large deck helps.
+- Suit-debuffing bosses: Keep 2+ suits viable. Smeared Joker or Luchador.
+- Luchador: Sell during Boss Blind to disable its effect entirely.
+
+## Shop Decision Framework
+1. Is it S+ tier? → BUY (override economy concerns)
+2. Does it synergize with my build? → Strong buy
+3. Will buying break my interest threshold? → Penalize unless S/S+ tier
+4. Do I need xMult? (check: ante ≥4 with 0 xMult sources = URGENT)
+5. Is it a scaling joker and we're early? → Buy for compound value
+6. Planet card matching my build's hand type? → Good buy
 
 ## Decision Framework
 1. Can I clear this blind with what I have? → Play the minimum hand needed
 2. Is discarding worth the risk? → Only if expected improvement > current hand value
-3. Shop: Does this item synergize with my build? Will buying break my interest threshold?
-4. Boss blind: What specific counter-strategy is needed?
+3. Keep enhanced/edition/seal cards — they have permanent value
+4. Boss blind: conserve discards for later hands
 
 ## CRITICAL: Response Format
 You MUST respond with ONLY a JSON object. No markdown, no extra text.
 Keep reasoning under 100 characters. Example:
 {"action": "discard", "params": {"cards": [2, 5, 7]}, "reasoning": "弃掉三张废牌，保留对子骨架"}
 {"action": "play", "params": {"cards": [0, 1, 3, 5, 6]}, "reasoning": "打出同花，超额1.5倍"}
-{"action": "buy", "params": {"index": 0}, "reasoning": "买Joker强化对子路线"}
-{"action": "skip", "reasoning": "保留利息，商店没有好东西"}
+{"action": "buy", "params": {"index": 0}, "reasoning": "买Blueprint，S+必拿"}
+{"action": "skip", "reasoning": "保留$25利息，商店没有好东西"}
 """
 
 
@@ -127,38 +161,64 @@ or: {{"action": "play", "params": {{"cards": {best_hand.all_cards}}}, "reasoning
 
 
 def build_shop_prompt(ctx: GameContext, item_scores: list[tuple[int, float, str]]) -> str:
-    """Build a shop purchase decision prompt."""
+    """Build a shop purchase decision prompt with tier awareness."""
     items_str = ""
     for idx, score, reason in item_scores:
         if idx < len(ctx.shop_items):
             item = ctx.shop_items[idx]
-            items_str += f"  [{idx}] {item.get('name','?')} (${item.get('cost',0)}, {item.get('type','?')}) — rule score: {score:.1f} ({reason})\n"
+            name = item.get('name', '?')
+            tier = JOKER_TIERS.get(name, JokerTier.UNKNOWN)
+            tier_str = f" [{tier.value}]" if tier != JokerTier.UNKNOWN else ""
+            edition = item.get('edition', '')
+            ed_str = f" ({edition})" if edition else ""
+            items_str += (
+                f"  [{idx}] {name}{tier_str}{ed_str} "
+                f"(${item.get('cost',0)}, {item.get('type','?')}) "
+                f"— rule score: {score:.1f} ({reason})\n"
+            )
+
+    # Count xMult sources
+    from .strategy import _count_xmult_jokers
+    xmult_count = _count_xmult_jokers(ctx)
 
     return f"""{_format_context(ctx)}
 
 Joker slots: {len(ctx.jokers)}/{ctx.joker_slots}
 Consumable slots: {len(ctx.consumables)}/{ctx.consumable_slots}
-Interest per round: ${ctx.interest_money}
+Interest per round: ${ctx.interest_money} | Money after interest: ${ctx.dollars}
+xMult jokers owned: {xmult_count}
 
-Shop items (with rule-based scores):
+Shop items (with rule-based scores and tiers):
 {items_str}
 Question: Should I buy anything? Consider:
-1. Archetype synergy with my {ctx.archetype.current.value} build
-2. Economy impact (will I lose interest?)
-3. Joker slot availability
+1. S+/S tier jokers should almost always be bought
+2. Archetype synergy with my {ctx.archetype.current.value} build
+3. Economy impact (will I lose interest? Am I above $25?)
+4. Do I urgently need xMult? (ante {ctx.ante}, have {xmult_count} xMult sources)
+5. Joker slot availability
 
 Respond: {{"action": "buy", "params": {{"index": N}}, "reasoning": "..."}}
 or: {{"action": "skip", "reasoning": "..."}}"""
 
 
 def build_boss_prompt(ctx: GameContext, boss_name: str) -> str:
-    """Build a boss blind strategy prompt."""
+    """Build a boss blind strategy prompt with knowledge-base counters."""
+    counter = get_boss_counter(boss_name, ctx)
+    counter_info = (
+        f"Effect: {counter['effect']}\n"
+        f"Known counter: {counter['counter']}\n"
+        f"Danger level: {counter['danger_level']}/3\n"
+        f"Counter jokers: {', '.join(counter['counter_jokers']) or 'none'}\n"
+        f"Have counter joker: {'yes' if counter.get('have_counter') else 'no'}"
+    )
+
     return f"""{_format_context(ctx)}
 
 Boss Blind: {boss_name}
+{counter_info}
 
-Question: What strategy should I use against this boss?
-Consider which cards/jokers counter the boss effect.
+Question: Given this boss blind and my current build, what's the best strategy?
+Should I adjust my play style, save specific cards, or use consumables?
 
 Respond: {{"action": "select_blind", "params": {{}}, "reasoning": "strategy explanation"}}"""
 
@@ -211,6 +271,22 @@ def call_llm(prompt: str, timeout: float = 30.0) -> Optional[dict]:
         elapsed_ms = (time.time() - start) * 1000
         _llm_stats["total_ms"] += elapsed_ms
         print(f"[llm_advisor] Error ({elapsed_ms:.0f}ms): {e}")
+        return None
+
+
+def _call_llm_raw(prompt: str, max_tokens: int = 512, timeout: float = 30.0) -> Optional[str]:
+    """Call LLM and return raw text response (no JSON parsing)."""
+    try:
+        r = requests.post(
+            f"{LLM_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
+            json={"model": LLM_MODEL, "messages": [{"role": "user", "content": prompt}],
+                  "temperature": 0.3, "max_tokens": max_tokens},
+            timeout=timeout,
+        )
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"[llm_advisor] _call_llm_raw error: {e}")
         return None
 
 
